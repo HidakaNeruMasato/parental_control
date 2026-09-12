@@ -30,13 +30,14 @@ python3 pc_agentd.py --once
 
 ### 期待される出力例:
 ```text
-INFO:pc_agentd:[監視中] ユーザー: child1 | アプリ: firefox (YouTube - Mozilla Firefox) | 無操作: 0.0s
+INFO:pc_agentd:[監視中] ユーザー: child1 | 最前面アプリ: firefox (YouTube - Mozilla Firefox) | 起動中GUIアプリ: ['firefox', 'steam'] | 無操作: 0.0s
 
 --- 監視結果サマリー ---
 アクティブユーザー: child1
 最前面アプリKey  : firefox
 アプリ表示名     : Firefox
 ウィンドウタイトル: YouTube - Mozilla Firefox
+起動中GUIアプリ  : ['firefox', 'steam']
 無操作アイドル時間: 0.00 秒
 ```
 

@@ -39,6 +39,9 @@ class TestAgentModules(unittest.TestCase):
         self.assertIn("app_name_raw", info)
         self.assertIn("window_title", info)
 
+        running_apps = tracker.get_running_gui_apps()
+        self.assertIsInstance(running_apps, list)
+
     def test_idle_tracker(self):
         tracker = IdleTracker()
         idle_sec = tracker.get_idle_seconds()
@@ -55,11 +58,13 @@ class TestAgentModules(unittest.TestCase):
             start_time=now,
             end_time=now,
             duration_seconds=60,
-            idle_seconds=5
+            idle_seconds=5,
+            running_gui_apps=[{"app_key": "steam"}, {"app_key": "firefox"}]
         )
 
         self.assertEqual(record["child_user"], "child1")
         self.assertEqual(record["active_seconds"], 55)
+        self.assertIn("steam", record["running_apps"])
         self.assertIsNotNone(record["event_id"])
 
         # 生成された JSONL ファイルの検証

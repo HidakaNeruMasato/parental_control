@@ -44,12 +44,15 @@ class ParentalControlAgent:
         """1ステップ分のモニタリングを実行して状態を返します（テスト・デバッグ用）"""
         active_user = self.user_tracker.get_active_user() or "offline"
         app_info = self.app_tracker.get_active_app_info()
+        running_apps = self.app_tracker.get_running_gui_apps(target_user=active_user if active_user != "offline" else None)
         idle_sec = self.idle_tracker.get_idle_seconds()
 
-        logger.info(f"[監視中] ユーザー: {active_user} | アプリ: {app_info['app_key']} ({app_info['window_title']}) | 無操作: {idle_sec:.1f}s")
+        running_keys = [a["app_key"] for a in running_apps]
+        logger.info(f"[監視中] ユーザー: {active_user} | 最前面アプリ: {app_info['app_key']} ({app_info['window_title']}) | 起動中GUIアプリ: {running_keys} | 無操作: {idle_sec:.1f}s")
         return {
             "user": active_user,
             "app": app_info,
+            "running_apps": running_apps,
             "idle_sec": idle_sec
         }
 
@@ -65,6 +68,7 @@ class ParentalControlAgent:
                 now_utc = datetime.now(timezone.utc)
                 active_user = self.user_tracker.get_active_user() or "nobody"
                 app_info = self.app_tracker.get_active_app_info()
+                running_apps = self.app_tracker.get_running_gui_apps(target_user=active_user if active_user != "nobody" else None)
                 idle_sec = self.idle_tracker.get_idle_seconds()
 
                 # アイドル検知 (無操作判定閾値 5秒以上の場合累積)
@@ -86,7 +90,8 @@ class ParentalControlAgent:
                             start_time=self.session_start_time,
                             end_time=now_utc,
                             duration_seconds=duration,
-                            idle_seconds=int(self.accumulated_idle_sec)
+                            idle_seconds=int(self.accumulated_idle_sec),
+                            running_gui_apps=running_apps
                         )
 
                     # リセット
@@ -125,6 +130,7 @@ def main():
         print(f"最前面アプリKey  : {result['app']['app_key']}")
         print(f"アプリ表示名     : {result['app']['app_name_raw']}")
         print(f"ウィンドウタイトル: {result['app']['window_title']}")
+        print(f"起動中GUIアプリ  : {[a['app_key'] for a in result['running_apps']]}")
         print(f"無操作アイドル時間: {result['idle_sec']:.2f} 秒")
     else:
         agent.start_loop()

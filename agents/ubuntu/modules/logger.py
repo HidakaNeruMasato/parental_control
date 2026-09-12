@@ -26,11 +26,12 @@ class UsageLogger:
             self.log_dir = fallback_dir
             os.makedirs(self.log_dir, exist_ok=True)
 
-    def record_session(self, child_user: str, device_id: str, app_info: dict, start_time: datetime, end_time: datetime, duration_seconds: int, idle_seconds: int = 0) -> dict:
+    def record_session(self, child_user: str, device_id: str, app_info: dict, start_time: datetime, end_time: datetime, duration_seconds: int, idle_seconds: int = 0, running_gui_apps: list[dict] | None = None) -> dict:
         """
         UsageSession レコードを作成し、JSONL ファイルに保存します。
         """
         event_id = str(uuid.uuid4())
+        running_keys = [a["app_key"] for a in running_gui_apps] if running_gui_apps else []
         record = {
             "event_id": event_id,
             "child_user": child_user,
@@ -38,6 +39,7 @@ class UsageLogger:
             "app_key": app_info.get("app_key", "unknown"),
             "app_name_raw": app_info.get("app_name_raw", "Unknown Application"),
             "window_title": app_info.get("window_title", ""),
+            "running_apps": running_keys,
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
             "duration_seconds": max(0, duration_seconds),
@@ -50,7 +52,7 @@ class UsageLogger:
         try:
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            logger.info(f"セッション記録保存: User={child_user}, App={record['app_key']}, Active={record['active_seconds']}s (EventID={event_id})")
+            logger.info(f"セッション記録保存: User={child_user}, ActiveApp={record['app_key']}, RunningApps={running_keys}, Active={record['active_seconds']}s (EventID={event_id})")
         except Exception as e:
             logger.error(f"セッション書き込みエラー: {e}")
 
