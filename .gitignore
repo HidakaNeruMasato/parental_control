@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs and databases
+*.log
+*.jsonl
+test_logs/
+logs/
+*.sqlite
+*.sqlite3
+
+# Node / Frontend / Backend
+node_modules/
+dist/
+.env
+.env.local
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
