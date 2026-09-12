@@ -46,7 +46,8 @@ INFO:pc_agentd:[監視中] ユーザー: child1 | アプリ: firefox (YouTube - 
 
 ### シナリオ A: フォーカスアプリ切り替えテスト
 1. デスクトップ上で **Firefox** を起動してアクティブにします。
-2. ターミナルで `./pc_agentd.py --log-dir ./test_logs` をバックグラウンドまたは別ウィンドウで開始します。
+2. ターミナルで `python3 pc_agentd.py --log-dir ./test_logs` をバックグラウンドまたは別ウィンドウで開始します。
+   （※ `./pc_agentd.py` で実行する場合はあらかじめ `chmod +x pc_agentd.py` で実行権限を付与してください）
 3. Firefox で特定のページを閲覧します。
 4. **VS Code** や **テキストエディタ** に切り替えて 10秒間操作します。
 5. Agent ログ (`./test_logs/usage_YYYYMMDD.jsonl`) を確認します。

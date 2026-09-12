@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Ubuntu Agent メイン監視デーモン (pc_agentd)
 ユーザー追跡、最前面アプリ識別、離席（アイドル）計測、UsageSession の定期集計と記録を行います。
