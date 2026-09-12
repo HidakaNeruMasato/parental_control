@@ -1,6 +1,6 @@
 """
 最前面アクティブアプリケーションおよび起動中GUIアプリケーションの統合識別モジュール
-Wayland (GNOME Shell / Procfs) および X11 (xdotool / xprop / _NET_ACTIVE_WINDOW) に対応。
+システム背景デーモン（goa-daemon, gvfs等）を除外保護し、ユーザーアプリケーション（ブラウザ、ゲーム、メディア、チャット等）を正確に抽出します。
 """
 import subprocess
 import shutil
@@ -10,17 +10,37 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# バックグラウンドシステムプロセスやシステム常駐を除外するためのキーワード
-EXCLUDE_COMM = {
-    "systemd", "gnome-shell", "wayland", "pipewire", "dbus-daemon", "pulseaudio",
-    "xorg", "gdm", "networkmanager", "snapd", "bash", "zsh", "sh", "python3", "pc_agentd.py"
-}
+# バックグラウンドシステムプロセス・GNOME内部デーモンの除外パターン (正規表現・完全一致)
+SYSTEM_EXCLUDE_PATTERNS = [
+    r"^systemd.*", r"^gnome-.*", r"^gvfs.*", r"^goa-.*", r"^at-spi-.*", r"^ibus-.*",
+    r"^xdg-.*", r"^tracker-.*", r"^appstream.*", r"^snapd.*", r"^dbus-.*", r"^pipewire.*",
+    r"^pulseaudio.*", r"^wireplumber.*", r"^polkit.*", r"^rtkit.*", r"^upower.*", r"^udisks.*",
+    r"^colord.*", r"^wpa_supplicant.*", r"^geoclue.*", r"^cups.*", r"^evolution-.*", r"^gdm.*",
+    r"^xorg.*", r"^wayland.*", r"^networkmanager.*", r"^python.*", r"^bash.*", r"^zsh.*", r"^sh.*",
+    r"^pc_agentd.*", r"^ssh.*", r"^agent.*", r"^dconf-.*", r"^gsd-.*", r"^mutter.*"
+]
+
+# 明示的にアプリケーションとして扱うメジャーアプリのキーワード
+KNOWN_USER_APPS = [
+    "firefox", "chrome", "chromium", "brave", "edge", "opera",
+    "steam", "minecraft", "godot", "unity", "blender", "gimp", "inkscape",
+    "vlc", "spotify", "discord", "slack", "zoom", "teams", "telegram",
+    "code", "gedit", "kate", "libreoffice", "soffice", "nautilus", "gnome-terminal",
+    "konsole", "obs", "lutris", "heroic", "epiphany"
+]
 
 class AppTracker:
-    def __init__(self):
+    def __init__(self, monitored_apps: list[str] | None = None, ignored_apps: list[str] | None = None):
         self.xdotool_path = shutil.which("xdotool")
         self.xprop_path = shutil.which("xprop")
         self.gdbus_path = shutil.which("gdbus")
+        
+        # 将来のWebダッシュボード・設定ファイルでオン/オフ切替可能なフィルタ用設定
+        self.monitored_apps = set(a.lower() for a in monitored_apps) if monitored_apps else None
+        self.ignored_apps = set(a.lower() for a in ignored_apps) if ignored_apps else set()
+
+        # デスクトップエントリー (.desktop) から実アプリケーションのコマンド一覧をキャッシュ
+        self.known_desktop_apps = self._load_desktop_app_names()
 
     def get_active_app_info(self) -> dict:
         """
@@ -42,7 +62,7 @@ class AppTracker:
             if info and info.get("app_key") and info.get("app_key") != "unknown":
                 return info
 
-        # 3. Procfs 動的フォールバック (最直近のユーザーアクティブプロセス)
+        # 3. Procfs 動的フォールバック
         info = self._get_info_via_procfs_dynamic()
         if info:
             return info
@@ -56,14 +76,13 @@ class AppTracker:
 
     def get_running_gui_apps(self, target_user: str | None = None) -> list[dict]:
         """
-        現在ターゲットユーザー（指定がなければ全ユーザー）が起動している GUI アプリケーションの一覧を取得します。
-        バックグラウンドで起動しているゲームやブラウザ等を網羅します。
+        現在ターゲットユーザーが起動しているユーザーアプリケーション（ブラウザ、ゲーム、チャット等）の一覧を取得します。
+        システム背景デーモンは自動除外され、設定されたフィルタ（監視対象/無視対象）を適用します。
         """
         running_apps = []
         seen_keys = set()
 
         try:
-            # ps コマンドで DISPLAY または WAYLAND_DISPLAY を所有するユーザープロセスを取得
             res = subprocess.run(
                 ["ps", "-u", target_user if target_user else "", "-o", "pid,user,comm,args"],
                 capture_output=True,
@@ -85,12 +104,21 @@ class AppTracker:
                     args = parts[3] if len(parts) > 3 else comm
 
                     comm_clean = comm.lower()
-                    if comm_clean in EXCLUDE_COMM or pid_str == str(os.getpid()):
+
+                    # システム背景プロセスの排除
+                    if self._is_system_daemon(comm_clean):
                         continue
 
-                    # DISPLAY環境変数またはGUIアプリケーションの特徴を持つプロセスかを判定
-                    if self._is_gui_process(pid_str, comm_clean, args):
+                    # トラッキング対象アプリケーションか判定
+                    if self._is_user_application(pid_str, comm_clean, args):
                         app_key = comm_clean
+
+                        # ユーザー設定フィルタの適用 (ignored_apps / monitored_apps)
+                        if app_key in self.ignored_apps:
+                            continue
+                        if self.monitored_apps is not None and app_key not in self.monitored_apps:
+                            continue
+
                         if app_key not in seen_keys:
                             seen_keys.add(app_key)
                             running_apps.append({
@@ -100,12 +128,62 @@ class AppTracker:
                                 "user": user
                             })
         except Exception as e:
-            logger.debug(f"実行中GUIアプリ一覧取得失敗: {e}")
+            logger.debug(f"実行中ユーザーアプリ一覧取得失敗: {e}")
 
         return running_apps
 
+    def _is_system_daemon(self, comm: str) -> bool:
+        """システム背景デーモンかどうかを判定"""
+        for pat in SYSTEM_EXCLUDE_PATTERNS:
+            if re.search(pat, comm):
+                return True
+        return False
+
+    def _is_user_application(self, pid_str: str, comm: str, args: str) -> bool:
+        """一般ユーザーが対話的に利用するアプリケーションかどうかを判定"""
+        # 1. メジャーユーザーアプリ名
+        if any(app in comm or app in args.lower() for app in KNOWN_USER_APPS):
+            return True
+
+        # 2. .desktop ファイルに登録されたアプリケーション名との一致
+        if comm in self.known_desktop_apps:
+            return True
+
+        # 3. 環境変数 DISPLAY / WAYLAND_DISPLAY のチェック
+        environ_path = os.path.join("/proc", pid_str, "environ")
+        if os.path.exists(environ_path):
+            try:
+                with open(environ_path, "rb") as f:
+                    env_bytes = f.read()
+                    if (b"DISPLAY=" in env_bytes or b"WAYLAND_DISPLAY=" in env_bytes) and not self._is_system_daemon(comm):
+                        return True
+            except Exception:
+                pass
+
+        return False
+
+    def _load_desktop_app_names(self) -> set[str]:
+        """/usr/share/applications 等から登録されているユーザーアプリの Exec 名を取得"""
+        app_names = set()
+        desktop_dirs = ["/usr/share/applications", os.path.expanduser("~/.local/share/applications")]
+        for d in desktop_dirs:
+            if os.path.exists(d):
+                try:
+                    for filename in os.listdir(d):
+                        if filename.endswith(".desktop"):
+                            path = os.path.join(d, filename)
+                            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                                for line in f:
+                                    if line.startswith("Exec="):
+                                        exec_cmd = line.split("=", 1)[1].strip().split()[0]
+                                        exec_name = os.path.basename(exec_cmd).lower()
+                                        if not self._is_system_daemon(exec_name):
+                                            app_names.add(exec_name)
+                except Exception as e:
+                    logger.debug(f".desktop パース失敗: {e}")
+        return app_names
+
     def _get_info_via_xprop_active_window(self) -> dict | None:
-        """xprop -root _NET_ACTIVE_WINDOW から最前面ウィンドウ情報を正確に取得"""
         if not self.xprop_path:
             return None
         try:
@@ -118,7 +196,6 @@ class AppTracker:
                 return None
             win_id = match.group(1)
 
-            # ウィンドウの詳細情報 (WM_CLASS, WM_NAME) を取得
             res_detail = subprocess.run([self.xprop_path, "-id", win_id, "WM_CLASS", "WM_NAME"], capture_output=True, text=True, timeout=2)
             if res_detail.returncode != 0:
                 return None
@@ -136,7 +213,6 @@ class AppTracker:
                     if match_title:
                         window_title = match_title.group(1)
 
-            # PID の取得
             pid_res = subprocess.run([self.xprop_path, "-id", win_id, "_NET_WM_PID"], capture_output=True, text=True, timeout=2)
             pid = None
             if pid_res.returncode == 0 and "=" in pid_res.stdout:
@@ -215,7 +291,6 @@ class AppTracker:
         return None
 
     def _get_info_via_procfs_dynamic(self) -> dict | None:
-        """Procfs から現在のアクティブな GUI アプリケーションを直近アクセス時刻順に探査"""
         try:
             candidates = []
             for pid_str in os.listdir("/proc"):
@@ -226,18 +301,15 @@ class AppTracker:
                     with open(comm_path, "r", encoding="utf-8", errors="ignore") as f:
                         comm = f.read().strip().lower()
                     
-                    if comm in EXCLUDE_COMM:
+                    if self._is_system_daemon(comm):
                         continue
 
-                    # プロセスの環境変数や GUI 属性をチェック
-                    if self._is_gui_process(pid_str, comm, ""):
-                        # 最終ステート変化時刻を計測
+                    if self._is_user_application(pid_str, comm, ""):
                         stat_path = os.path.join("/proc", pid_str, "stat")
                         mtime = os.path.getmtime(stat_path) if os.path.exists(stat_path) else 0
                         candidates.append((mtime, comm, int(pid_str)))
 
             if candidates:
-                # 最新の活動があったプロセスを採用
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 top_comm = candidates[0][1]
                 top_pid = candidates[0][2]
@@ -250,29 +322,6 @@ class AppTracker:
         except Exception as e:
             logger.debug(f"procfs dynamic 取得失敗: {e}")
         return None
-
-    def _is_gui_process(self, pid_str: str, comm: str, args: str) -> bool:
-        """該当プロセスが GUI アプリケーションであるかを判定"""
-        # よくある GUI アプリケーションの特徴パターン
-        known_gui = [
-            "firefox", "chrome", "chromium", "steam", "code", "vlc", "gimp",
-            "godot", "discord", "spotify", "gedit", "nautilus", "gnome-terminal",
-            "obs", "blender", "libreoffice", "thunderbird", "lutris", "heroic"
-        ]
-        if any(k in comm or k in args.lower() for k in known_gui):
-            return True
-
-        # 環境変数の DISPLAY や WAYLAND_DISPLAY のチェック
-        environ_path = os.path.join("/proc", pid_str, "environ")
-        if os.path.exists(environ_path):
-            try:
-                with open(environ_path, "rb") as f:
-                    env_bytes = f.read()
-                    if b"DISPLAY=" in env_bytes or b"WAYLAND_DISPLAY=" in env_bytes:
-                        return True
-            except Exception:
-                pass
-        return False
 
     def _get_process_name(self, pid: int) -> str | None:
         comm_path = f"/proc/{pid}/comm"
@@ -291,4 +340,4 @@ if __name__ == "__main__":
     info = tracker.get_active_app_info()
     running = tracker.get_running_gui_apps()
     print("アクティブアプリ情報:", info)
-    print("起動中GUIアプリ一覧:", running)
+    print("起動中ユーザーアプリ一覧:", running)
